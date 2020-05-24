@@ -8,9 +8,9 @@ Created on Mon Apr 20 16:48:01 2020
 import pandas as pd
 import numpy as np
 from imblearn.over_sampling import SMOTE
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.inspection import permutation_importance
+from sklearn.svm import SVC
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, AdaBoostClassifier
+from sklearn.feature_selection import RFECV
 from sklearn.model_selection import GridSearchCV
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import StratifiedKFold
@@ -26,11 +26,6 @@ features = df.columns.difference(['RESULTADO'])
 x = df[features]
 y = df['RESULTADO']
 
-#Normalização da base
-normalizador = MinMaxScaler(feature_range=(0, 1))
-normalizador.fit(x)
-x.values[:] = normalizador.transform(x)
-
 #Separa base treinamento e teste
 xTreino, xTeste, yTreino, yTeste = train_test_split(x, y, stratify=y, train_size=0.7, random_state=1986)
 
@@ -42,18 +37,18 @@ dfDescartados = treino[treino['RESULTADO'] == 0] #Separa a base de descartados
 dfConfirmados = treino[treino['RESULTADO'] == 1] #Separa a base de confirmados
 
 #Under sampling
-#print('\nUnder Sampling')
-#dfDescartadosUnder = dfDescartados.sample(qtdeConfirmados)
-#dfUnder = pd.concat([dfDescartadosUnder, dfConfirmados], axis=0)
-#xTreino = dfUnder[features].values
-#yTreino = dfUnder['RESULTADO'].values
+print('\nUnder Sampling')
+dfDescartadosUnder = dfDescartados.sample(qtdeConfirmados)
+dfUnder = pd.concat([dfDescartadosUnder, dfConfirmados], axis=0)
+xTreino = dfUnder[features].values
+yTreino = dfUnder['RESULTADO'].values
 
 #Over sampling
-#print('\nOver Sampling')
-#dfConfirmadosOver = dfConfirmados.sample(qtdeDescartados, replace=True)
-#dfOver = pd.concat([dfDescartados, dfConfirmadosOver], axis=0)
-#xTreino = dfOver[features].values
-#yTreino = dfOver['RESULTADO'].values
+print('\nOver Sampling')
+dfConfirmadosOver = dfConfirmados.sample(qtdeDescartados, replace=True)
+dfOver = pd.concat([dfDescartados, dfConfirmadosOver], axis=0)
+xTreino = dfOver[features].values
+yTreino = dfOver['RESULTADO'].values
 
 #Smote sampling
 print('\nSmote Sampling')
@@ -62,31 +57,8 @@ xTreino, yTreino = oversample.fit_resample(treino[features], treino['RESULTADO']
 xTreino = xTreino.values
 yTreino = yTreino.values
 
-#Define o classificador
-classifier = RandomForestClassifier(class_weight="balanced", random_state=1986)
-
-#Treina com todos registros
-classifier.fit(xTreino, yTreino) 
-
-#Define o scoring
-scoring = ['accuracy', 'balanced_accuracy', 'average_precision', 'recall', 'jaccard']
-score = 'average_precision'
-
-#Permutation Importance
-print('\nPermutation Importance')
-pi = permutation_importance(classifier, x, y, scoring=score, n_jobs=3, random_state=1986)
-
-#Restringe as features
-indFeatures = np.where((pi.importances_mean * 1000) >= 0.001)[0]
-for i in pi.importances_mean[indFeatures].argsort()[::-1]:
-    print('%s: %.2f' % (features[indFeatures[i]], pi.importances_mean[indFeatures[i]] * 1000))
-
-xTreino = xTreino[:, indFeatures]
-xTeste = xTeste[xTeste.columns[indFeatures]]
-print('Qtde features selecionadas: ', len(xTeste.columns))
-
 #K-fold
-print('\n========== TUNING PARAMETERS ==========')
+print('\n========== VALIDAÇÃO MÉTODO K-FOLD ==========')
 arrayYReal = []
 arrayYPrediction = []
 arrayAcuracia = []
@@ -94,32 +66,52 @@ arrayConfusion = np.array([[0, 0], [0, 0]])
 
 kfold = StratifiedKFold(n_splits=5, shuffle=True, random_state=1986)
 
+#Define o score
+score = 'average_precision'
+
 #Grid Search
-paramGrid = {
-        'criterion': ['entropy', 'gini'],
-        'n_estimators': [3, 25, 50, 100],
-        'max_depth': [None, 3, 5],
-        'min_samples_split': [2, 5],
-        'min_samples_leaf': [1, 3, 5],
-        'min_weight_fraction_leaf': [0, 2, 5],
-        'max_features': ['auto', 0.1, 0.2, 0.5],
-        'bootstrap': [False, True],
-        }
+paramGrid = [
+    {
+         'estimator': [RandomForestClassifier(class_weight='balanced', random_state=1986)],
+         'estimator__criterion': ['entropy', 'gini'],
+         'estimator__n_estimators': [3, 10],
+         #'estimator__max_depth': [None, 3, 5],
+         #'estimator__bootstrap': [False, True],
+    },
+    {
+         'estimator': [AdaBoostClassifier(random_state=1986)],
+         'estimator__n_estimators': [3, 10],
+    },
+    {
+         'estimator': [GradientBoostingClassifier(random_state=1986)],
+         'estimator__criterion': ['friedman_mse', 'mse', 'mae'], 
+         'estimator__n_estimators': [3, 10],
+         #'estimator__max_depth': [None, 3, 5],
+         #'estimator__loss': ['deviance', 'exponential'],
+    },
+    {
+        'estimator': [SVC(kernel="linear", C=0.025, random_state=1986)],
+    }]
+
+#Feature Selection nas mesmas condições de classificador e folders
+rfecv = RFECV(estimator=None, step=1, cv=kfold, scoring=score)
 
 #Faz o processamento de treinamento com Tuning e Feature Selection
-gridSearch = GridSearchCV(estimator=classifier, param_grid=paramGrid, scoring=scoring, refit=score, n_jobs=3)
+gridSearch = GridSearchCV(rfecv, paramGrid, scoring=score, n_jobs=3, verbose=25)
 gridSearch.fit(xTreino, yTreino)
 
 classifier = gridSearch.best_estimator_
+indFeatures = np.where(classifier.support_ == True)[0]
 
-print('\nClassificador:', classifier.__class__)
-print('\nScoring:', scoring)
-print('Score:', score)
-print('\nMelhor parametrização: %s' % gridSearch.best_params_)
+print('\nMelhor estimador: %s' % gridSearch.best_estimator_)
+print('Melhor parametrização: %s' % gridSearch.best_params_)
 print('Melhor pontuação: %.2f' % gridSearch.best_score_)
+print('Qtde features selecionadas: ', len(indFeatures))
 
 #K-fold
-print('\n========== VALIDAÇÃO MÉTODO K-FOLD ==========')
+print('========== VALIDAÇÃO MÉTODO K-FOLD ==========')
+xTreino = xTreino[:, indFeatures]
+
 arrayYReal = []
 arrayYPrediction = []
 arrayAcuracia = []
@@ -146,6 +138,8 @@ print(classification_report(arrayYReal, arrayYPrediction, labels=[0, 1]))
 
 #Validação 
 print('\n========== TESTE ==========')
+xTeste = xTeste[xTeste.columns[indFeatures]]
+
 #Etapa de treinamento
 classifier.fit(xTreino, yTreino)
 
